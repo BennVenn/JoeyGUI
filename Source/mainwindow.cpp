@@ -81,6 +81,7 @@ void MainWindow::Init(){
     ui->comboBox_Bootleg->addItem("Battery + SRAM");
     ui->comboBox_Bootleg->addItem("Battery + A4 + SRAM");
     ui->comboBox_Bootleg->addItem("64K Flash Save");
+    ui->comboBox_Bootleg->addItem("64K Flash Save (39VF512)");
     ui->comboBox_Bootleg->addItem("128K Flash Save");
     ui->comboBox_Bootleg->addItem("128K (A4) Flash Save");
     ui->comboBox_Bootleg->addItem("ROM Save 64K (Batteryless)");
@@ -88,8 +89,7 @@ void MainWindow::Init(){
 
     ui->comboBox_ROMoffset->addItem("ROM offset 0x18000000");
 
-    ui->comboBox_battery->addItem("No Battery");
-    ui->comboBox_battery->addItem("Battery");
+
     ui->plainTextEdit->setVisible(false);
     ui->comboBox_FlashCartType->setVisible(false);
 
@@ -388,6 +388,36 @@ void MainWindow::FetchCartData(){
 
     }
     else if (cartType==GBA){
+        qDebug() << receivedData;
+        if (receivedData[0]=='P' && receivedData[1] == 0x00 && receivedData[2] == 'P') {
+            //no cart inserted
+            ui->labelROMTitle->setText("No Cart Inserted");
+            qDebug("FLoating Bus");
+            return;
+        }
+        if (receivedData == "") {
+            qDebug("ERROR! port disconnected or sumfink");
+            serialPort.close();
+            ui->labelGameThumbnail->setVisible(false);
+            ui->pushButton_DownloadROM->setVisible(false);
+            ui->pushButton_DownloadSave->setVisible(false);
+            ui->pushButton_UploadSave->setVisible(false);
+            Init();
+            ui->labelLFN->setVisible(true);
+            ui->labelLFN->setText("Joey Disconnected... Searching");
+            ui->labelStatus->setText(""); //clear status bar
+            ui->labelGif->raise();
+            // Update the image based on the connection status
+            updateImage(0);
+            ui->labelMode->setVisible(true);
+            QGraphicsOpacityEffect* opacityEffect = new QGraphicsOpacityEffect(this);
+            opacityEffect->setOpacity(1);
+            ui->labelGif->setGraphicsEffect(opacityEffect);
+            connected = false;
+            return;
+        }
+
+
         ui->labelROMCHK8->setText("Game ID: "+ QString(receivedData[12]) + QString(receivedData[13]) + QString(receivedData[14]) + QString(receivedData[15]));
         ui->labelROMCHK8->setVisible(true);
         ui->labelROMCHK8->raise();
@@ -443,7 +473,7 @@ void MainWindow::FetchCartData(){
                     qDebug() << "Numeric substring has less than two characters.";
                 }
             } else {
-                qDebug() << "ASCII substring not found in the data.";
+                qDebug() << "ASCII substring not found in the data." << asciiSubstring;
             }
             file.close();
         }
@@ -484,7 +514,8 @@ void MainWindow::FetchCartData(){
             ui->label_CFI->setText("Flash detected - This cart is NOT genuine");
             ui->pushButton_UploadROM->setVisible(true);
             ui->plainTextEdit->setVisible(true);
-
+            ui->pushButton_DownloadSave->setVisible(true);
+            ui->pushButton_UploadSave->setVisible(true);
             InterrogateCFI();
 
 
@@ -579,7 +610,7 @@ void MainWindow::pollSerialPorts() //called once a second
                 if ((EBcurrentSector * CFIEBsize) > CFIFlashSize) {
                     ui->plainTextEdit->appendPlainText("Done!");
                     ui->labelLFN->setText("Erased! Ready to write flash");
-                    StateMachine == State_Ready;
+                    StateMachine = State_Ready;
 
                 }
 
@@ -648,6 +679,44 @@ void MainWindow::on_pushButton_UploadSave_clicked()
 {
     qDebug("Save Xfer requested");
     StateMachine=State_RAM_Wr;
+
+    if (cartType == GBC) {
+        MBC = cartMapperType;
+    }
+    else
+    {
+        if (ui->comboBox_Bootleg->currentText() == "Default Settings") {
+            //use the romlist or override option
+            switch (GBAsaveType) {
+            case'0':MBC = 0x40; break; // EEPROM Size 512Bytes (4kbit)
+            case'1':MBC = 0x41; break; // EEPROM Size 8KBytes (64kbit)"
+            case'2':MBC = 0x42; break; // No Save File
+            case'3':MBC = 0x43; break; // SRAM Size 32KBytes (256kbit)
+            case'4':MBC = 0x44; break; // Flash Save Size 64KBytes (512kbit)
+            case'5':MBC = 0x45; break; // Flash Save Size 128KBytes (1mbit)
+            case'6':MBC = 0x46; break; // SRAM Size 64KBytes (512kbit)
+            default:MBC = 0x46; break; // SRAM Size 64KBytes (512kbit)
+            }
+        } //
+        else if (ui->comboBox_Bootleg->currentText() == "64K Flash Save (39VF512)") {
+            StateMachine = State_Bypass;
+            MBC = 0x49;
+        }
+        else if (ui->comboBox_Bootleg->currentText() == "Battery + A4 + SRAM") {
+            StateMachine = State_Bypass;
+            sendByte(GBA, 0x1000000, 0x00); //set A4 mapper to bank 0
+            MBC = 0x47;
+        }
+        else if (ui->comboBox_Bootleg->currentText() == "128K (A4) Flash Save") {
+            StateMachine = State_Bypass;
+            sendByte(GBA, 0x1000000, 0x00); //set A4 mapper to bank 0
+            MBC = 0x48;
+        }
+
+    }
+
+
+
     QString filePath = QFileDialog::getOpenFileName(this, "Open .SAV File", QString(), "Save File (*.SAV)");
     QFile file(filePath);
     if (!file.open(QIODevice::ReadOnly)) {
@@ -659,20 +728,57 @@ void MainWindow::on_pushButton_UploadSave_clicked()
     int offset = 0;
     // Buffer to store the packet
     QByteArray packet(42, 0);  // 2 fixed bytes (0x05, 0x01) + 4 bytes offset + 32 bytes data
-    // Loop until the end of the file
-    while (!file.atEnd()) {
-        ui->progressBar->setValue(static_cast<int>((static_cast<double>(offset) / cartRamSize) * 100));
-        packet[0] = 0x05;
-        packet[1] = 0x01;
-        // Set the 32-bit offset at position 2 in the byte array
-        for (int i = 0; i < 4; ++i) {
-            packet[2 + i] = static_cast<char>((offset >> (8 * i)) & 0xFF);
+
+    if (cartType == GBC) {
+
+        // Loop until the end of the file
+        while (!file.atEnd()) {
+            ui->progressBar->setValue(static_cast<int>((static_cast<double>(offset) / cartRamSize) * 100));
+            packet[0] = 0x05;
+            packet[1] = 0x01;
+            // Set the 32-bit offset at position 2 in the byte array
+            for (int i = 0; i < 4; ++i) {
+                packet[2 + i] = static_cast<char>((offset >> (8 * i)) & 0xFF);
+            }
+            file.read(packet.data() + 10, 32);
+            serialPort.write(packet);
+            serialPort.waitForBytesWritten();
+            offset += 32;
         }
-        file.read(packet.data() + 10, 32);
-        serialPort.write(packet);
-        serialPort.waitForBytesWritten();
-        offset += 32;
     }
+    else if (cartType == GBA) {
+
+        // Loop until the end of the file
+        while (!file.atEnd()) {
+            ui->progressBar->setValue(static_cast<int>((static_cast<double>(offset) / cartRamSize) * 100));
+            packet[0] = 0x05;
+            packet[1] = (static_cast<char>(MBC));
+            // Set the 32-bit offset at position 2 in the byte array
+            for (int i = 0; i < 4; ++i) {
+                packet[2 + i] = static_cast<char>((offset >> (8 * i)) & 0xFF);
+            }
+            file.read(packet.data() + 10, 32);
+            serialPort.write(packet);
+            qDebug() << packet;
+            //serialPort.waitForBytesWritten();
+            if (serialPort.waitForReadyRead(1000)) {
+                // Reading response data
+                serialPort.readAll();
+            }
+
+            offset += 32;
+
+            if (offset == 65536)            sendByte(GBA, 0x1000000, 0x01); //set A4 mapper to bank 1
+
+
+        }
+
+
+
+
+    }
+
+
     ui->progressBar->setVisible(false);
     file.close();
     StateMachine=State_Ready;
@@ -687,10 +793,194 @@ void MainWindow::on_pushButton_DownloadROM_clicked()
     ui->progressBar->setVisible(true);
     offset=0;
     MBC=cartMapperType;
-    length=cartRomSize;
+ 
+    if (ui->checkBoxOverdump->isChecked() == true) {
+        if (cartType == GBC)cartRomSize = 1024 * 1024 * 8;
+        if (cartType == GBA)cartRomSize = 1024 * 1024 * 32;
+    }
+    length = cartRomSize;
     receivedData.clear();
     requestAndReceiveROM( MBC, offset);
     ui->labelGif->raise(); //put the image over the buttons so they're inaccessible.
+
+}
+
+void MainWindow::on_pushButton_SRAMTEST_clicked()
+{
+    StateMachine = State_Bypass;
+    qDebug("MBC3k HW test");
+    QByteArray temp;
+    int tries = 100;
+    // write a byte to address 0x4000 of each bank
+    //0x000,0xF0
+    //0xAAA, 0xAA
+    //0x555, 0x55
+    //0xAAA, 0xA0
+    for (unsigned int banks = 1; banks < 256; banks++) {
+        tries = 100;
+        sendByte(GBC, 0x2000, banks); //set the bank
+        sendByte(GBC, 0x4AAA, 0xAA);
+        sendByte(GBC, 0x4555, 0x55);
+        sendByte(GBC, 0x4AAA, 0xA0);
+        sendByte(GBC, 0x4000, banks);
+        while ((static_cast<unsigned char>(temp[0]) != banks) && tries > 0) {
+            temp = getBytes(GBC, 0x4000);
+            tries--;
+        }
+        if (tries == 0) { 
+            ui->plainTextEdit->appendPlainText(QString("Write Failed in Bank: %1, was the cart erased?").arg(banks));
+            StateMachine = State_Ready;
+            return; }
+    }
+
+    for (unsigned int banks = 1; banks < 256; banks++) {
+        sendByte(GBC, 0x2000, banks); //set the bank
+        temp = getBytes(GBC, 0x4000);
+        if (static_cast<unsigned char>(temp[0]) != banks) { 
+            ui->plainTextEdit->appendPlainText(QString("Read Failed in Bank: %1").arg(banks));
+            StateMachine = State_Ready;
+            return;
+        }
+    }
+
+    qDebug("ROM test passed, erasing sectors 0-4");
+    ui->plainTextEdit->appendPlainText(QString("ROM Test Passed, erasing sectors 0-8"));
+
+    tries = 1000;
+    sendByte(GBC, 0x2000, 0); //set the bank
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x80);
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x30);
+    while ((static_cast<unsigned char>(temp[0]) != 0xFF) && tries > 0) {
+        temp = getBytes(GBC, 0x4000);
+        tries--;
+    }
+    if (tries == 0) { qDebug("Erase Failed");  return; }
+
+    tries = 1000;
+    sendByte(GBC, 0x2000, 0); //set the bank
+    sendByte(GBC, 0x6AAA, 0xAA);
+    sendByte(GBC, 0x6555, 0x55);
+    sendByte(GBC, 0x6AAA, 0x80);
+    sendByte(GBC, 0x6AAA, 0xAA);
+    sendByte(GBC, 0x6555, 0x55);
+    sendByte(GBC, 0x6AAA, 0x30);
+    while ((static_cast<unsigned char>(temp[0]) != 0xFF) && tries > 0) {
+        temp = getBytes(GBC, 0x6000);
+        tries--;
+    }
+    if (tries == 0) { qDebug("Erase Failed");  return; }
+
+    tries = 1000;
+    sendByte(GBC, 0x2000, 1); //set the bank
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x80);
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x30);
+    while ((static_cast<unsigned char>(temp[0]) != 0xFF) && tries > 0) {
+        temp = getBytes(GBC, 0x4000);
+        tries--;
+    }
+    if (tries == 0) { qDebug("Erase Failed");  return; }
+
+    tries = 1000;
+    sendByte(GBC, 0x2000, 1); //set the bank
+    sendByte(GBC, 0x6AAA, 0xAA);
+    sendByte(GBC, 0x6555, 0x55);
+    sendByte(GBC, 0x6AAA, 0x80);
+    sendByte(GBC, 0x6AAA, 0xAA);
+    sendByte(GBC, 0x6555, 0x55);
+    sendByte(GBC, 0x6AAA, 0x30);
+    while ((static_cast<unsigned char>(temp[0]) != 0xFF) && tries > 0) {
+        temp = getBytes(GBC, 0x6000);
+        tries--;
+    }
+    if (tries == 0) { qDebug("Erase Failed");  return; }
+
+    tries = 1000;
+    sendByte(GBC, 0x2000, 2); //set the bank
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x80);
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x30);
+    while ((static_cast<unsigned char>(temp[0]) != 0xFF) && tries > 0) {
+        temp = getBytes(GBC, 0x4000);
+        tries--;
+    }
+    if (tries == 0) { qDebug("Erase Failed");  return; }
+
+    tries = 1000;
+    sendByte(GBC, 0x2000, 2); //set the bank
+    sendByte(GBC, 0x6AAA, 0xAA);
+    sendByte(GBC, 0x6555, 0x55);
+    sendByte(GBC, 0x6AAA, 0x80);
+    sendByte(GBC, 0x6AAA, 0xAA);
+    sendByte(GBC, 0x6555, 0x55);
+    sendByte(GBC, 0x6AAA, 0x30);
+    while ((static_cast<unsigned char>(temp[0]) != 0xFF) && tries > 0) {
+        temp = getBytes(GBC, 0x6000);
+        tries--;
+    }
+    if (tries == 0) { qDebug("Erase Failed");  return; }
+
+    tries = 1000;
+    sendByte(GBC, 0x2000, 3); //set the bank
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x80);
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x30);
+    while ((static_cast<unsigned char>(temp[0]) != 0xFF) && tries > 0) {
+        temp = getBytes(GBC, 0x4000);
+        tries--;
+    }
+    if (tries == 0) { qDebug("Erase Failed");  return; }
+
+    tries = 1000;
+    sendByte(GBC, 0x2000, 3); //set the bank
+    sendByte(GBC, 0x6AAA, 0xAA);
+    sendByte(GBC, 0x6555, 0x55);
+    sendByte(GBC, 0x6AAA, 0x80);
+    sendByte(GBC, 0x6AAA, 0xAA);
+    sendByte(GBC, 0x6555, 0x55);
+    sendByte(GBC, 0x6AAA, 0x30);
+    while ((static_cast<unsigned char>(temp[0]) != 0xFF) && tries > 0) {
+        temp = getBytes(GBC, 0x6000);
+        tries--;
+    }
+    if (tries == 0) { qDebug("Erase Failed");  return; }
+
+
+    tries = 1000;
+    sendByte(GBC, 0x2000, 4); //set the bank
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x80);
+    sendByte(GBC, 0x4AAA, 0xAA);
+    sendByte(GBC, 0x4555, 0x55);
+    sendByte(GBC, 0x4AAA, 0x30);
+    while ((static_cast<unsigned char>(temp[0]) != 0xFF) && tries > 0) {
+        temp = getBytes(GBC, 0x4000);
+        tries--;
+    }
+    if (tries == 0) { qDebug("Erase Failed");  return; }
+
+    qDebug("Erase Complete");
+    ui->plainTextEdit->appendPlainText(QString("Erase Complete, select test ROM to flash"));
+
+    StateMachine = State_Ready;
+
+    on_pushButton_UploadROM_clicked();
+
+
 
 }
 
@@ -701,8 +991,50 @@ void MainWindow::on_pushButton_DownloadSave_clicked()
     //ROM dump mode = 0x03, followed by mapper type, start offset, number of bytes to dump
     ui->progressBar->setVisible(true);
     offset=0;
-    MBC=cartMapperType;
-    length=cartRomSize;
+    length = cartRamSize;
+    if (cartType == GBC) {
+        MBC = cartMapperType;
+    }
+    else
+    {
+        if (ui->comboBox_Bootleg->currentText() == "Default Settings") {
+            //use the romlist or override option
+            switch (GBAsaveType) {
+            case'0':MBC = 0x40; length = 512;  break; // EEPROM Size 512Bytes (4kbit)
+            case'1':MBC = 0x41; length = 8192; break; // EEPROM Size 8KBytes (64kbit)"
+            case'2':MBC = 0x42; length = 131072; break; // No Save File
+            case'3':MBC = 0x43; length = 32768; break; // SRAM Size 32KBytes (256kbit)
+            case'4':MBC = 0x44; length = 65536; break; // Flash Save Size 64KBytes (512kbit)
+            case'5':MBC = 0x45; length = 131072; break; // Flash Save Size 128KBytes (1mbit)
+            case'6':MBC = 0x46; length = 65536; break; // SRAM Size 64KBytes (512kbit)
+            default:MBC = 0x46; length = 65536; break; // SRAM Size 64KBytes (512kbit)
+            }
+        }
+        else if (ui->comboBox_Bootleg->currentText() == "64K Flash Save") {
+            StateMachine = State_Bypass;
+            MBC = 0x44;
+            length = 65536;
+        }
+        else if (ui->comboBox_Bootleg->currentText() == "64K Flash Save (39VF512)") {
+            StateMachine = State_Bypass;
+            MBC = 0x49;
+            length = 65536;
+        }
+        else if (ui->comboBox_Bootleg->currentText() == "Battery + A4 + SRAM") {
+            StateMachine = State_Bypass;
+            sendByte(GBA, 0x1000000, 0x00); //set A4 mapper to bank 0
+            MBC = 0x47;
+            length = 131072;
+        }
+        else if (ui->comboBox_Bootleg->currentText() == "128K (A4) Flash Save") {
+            StateMachine = State_Bypass;
+            sendByte(GBA, 0x1000000, 0x00); //set A4 mapper to bank 0
+            MBC = 0x48;
+            length = 131072;
+        }
+        
+
+    }
     receivedData.clear();
     requestAndReceiveRAM( MBC, offset);
     ui->labelGif->raise(); //put the image over the buttons so they're inaccessible.
@@ -781,6 +1113,14 @@ void MainWindow::handleSerialData() //function is called on every packet receive
             }
             else if (StateMachine==State_RAM_Rd)
             {
+                if (((MBC==0x47)||(MBC==0x48)) && (offset == 65536)) {
+                    sendByte(GBA, 0x1000000, 0x01); //set A4 mapper to bank 1
+                    qDebug("Switching A4 bank");
+                    if (serialPort.waitForReadyRead(100)) {
+                        // Reading response data
+                        serialPort.readAll();
+                    }
+                }
                 requestAndReceiveRAM(MBC, offset);
             }
         }
@@ -1009,9 +1349,30 @@ void MainWindow::on_actionAbout_QT_triggered()
 void MainWindow::on_pushButton_Detect_clicked()
 {
 
+    QByteArray     temp;
 
 
+    StateMachine = State_Bypass;
+    QByteArray requestData;
 
+
+  
+    StateMachine = State_Bypass;
+    requestData.append(static_cast<char>(0x05));
+    requestData.append(static_cast<char>(0x49)); //flash save
+    requestData.append(static_cast<char>(1)); //
+    requestData.append(static_cast<char>(0)); //
+    requestData.append(static_cast<char>(0)); //
+    requestData.append(static_cast<char>(0)); //
+    // Send the request
+    serialPort.write(requestData);
+    if (serialPort.waitForReadyRead(1000)) {
+        // Reading response data
+        temp = serialPort.readAll();
+    }
+    qDebug() << temp;
+
+    StateMachine = State_Ready;
 
 }
 

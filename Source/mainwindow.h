@@ -131,6 +131,8 @@ private slots:
 
     void on_pushButton_UploadROM_clicked();
 
+    void on_pushButton_SRAMTEST_clicked();
+
     void on_comboBox_FlashCartType_currentIndexChanged(int index);
 
     void on_pushButton_clicked();

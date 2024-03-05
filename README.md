@@ -6,6 +6,8 @@ or may not work correctly. Feedback in our discord would be appreciated.
 
 Use the following source, application and firmware AT YOUR OWN RISK. 
 
+Don't forget to download the box art using the link in the ARTWORK folder.
+
 JoeyGUI uses the Qt Toolkit under the terms of the GNU Lesser General 
 Public License v. 3 and the GNU Lesser General Public License v. 2.1 
 (both jointly "LGPL"). In compliance with LGPL, this document collects 
