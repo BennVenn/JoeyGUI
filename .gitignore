@@ -1,0 +1,5 @@
+Source/main.o
+Source/mainwindow.o
+Source/moc_mainwindow.o
+Source/.qmake.stash
+Source/Makefile
